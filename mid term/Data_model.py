@@ -19,8 +19,11 @@ from tkinter import ttk, messagebox
 
 try:
     from CoolProp.CoolProp import PropsSI
+    COOLPROP_AVAILABLE = True
+    _COOLPROP_IMPORT_ERROR = None
 except ModuleNotFoundError as e:
     PropsSI = None
+    COOLPROP_AVAILABLE = False
     _COOLPROP_IMPORT_ERROR = e
 
 
