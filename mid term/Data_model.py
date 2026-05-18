@@ -45,7 +45,7 @@ FIXED_CONDITIONS = {
     "cold_inlet": {    # Water (저온부)
         "fluid":  "Water",
         "T_in":   530.0,            # K  (변경됨)
-        "m_dot":  5.0,              # kg/s
+        "m_dot":  0.05,             # kg/s — boiling 시각화용 (빠른 식음 + superheated)
         "P_in":   6.0e6,            # 6.0 MPa  (변경됨)
     },
     "target": {

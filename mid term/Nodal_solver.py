@@ -67,7 +67,7 @@ def advance_single_cell(hot_state, cold_state, geom, dx):
     dP_cold = f_c * (dx / geom["D_h"]) * rho_c * V_c**2 / 2.0
 
     P_hot_new  = hot_state["P"]  - dP_hot
-    P_cold_new = cold_state["P"] + dP_cold   # Counter-current: cold는 반대 방향이라 +
+    P_cold_new = cold_state["P"] - dP_cold   # Counter-current: cold는 반대 방향(x=L→x=0)이므로 -
 
     # ★★★ 안전 가드: 압력이 너무 낮아지면 명확한 에러 ★★★
     P_MIN = 1e5   # 1 bar 미만이면 비현실적
