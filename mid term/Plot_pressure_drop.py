@@ -196,9 +196,8 @@ def plot_pressure_drop(result, A_flow_hot=1e-3, A_flow_cold=1e-3,
             end_x = nd[i]["x_pos"]
     if onset_x is not None:
         right = end_x if end_x is not None else x_arr[-1]
-        # Cold flows from L to 0 (per temperature plot), so flip region
-        left_disp  = L - right
-        right_disp = L - onset_x
+        left_disp  = onset_x
+        right_disp = right
         ax.axvspan(left_disp, right_disp, alpha=0.12, color="orange")
 
     # --- final value annotations (pressure) ---
@@ -220,15 +219,13 @@ def plot_pressure_drop(result, A_flow_hot=1e-3, A_flow_cold=1e-3,
         T_h = [_conv(n["T_hot"])  for n in nd]
         T_c = [_conv(n["T_cold"]) for n in nd]
         x_pos = [n["x_pos"] for n in nd]
-        # Temperature axis kept as before: Hot x:0→L, Cold flipped (x:L→0)
-        x_cold_T = [L - x for x in x_pos]
         unit = "°C" if T_unit == "C" else "K"
 
         ax_T = ax.twinx()
         line_Th, = ax_T.plot(x_pos, T_h, "--", color="#d62728", lw=1.6,
                                alpha=0.75, label="Hot T  (x: 0 → L)")
-        line_Tc, = ax_T.plot(x_cold_T, T_c, "--", color="#2ca02c", lw=1.6,
-                               alpha=0.85, label="Cold T  (x: L → 0)")
+        line_Tc, = ax_T.plot(x_pos, T_c, "--", color="#2ca02c", lw=1.6,
+                               alpha=0.85, label="Cold T  (x: 0 → L)")
         ax_T.set_ylabel(f"Temperature [{unit}]", fontsize=11, color="#444")
         ax_T.tick_params(axis="y", labelcolor="#444")
         handles += [line_Th, line_Tc]

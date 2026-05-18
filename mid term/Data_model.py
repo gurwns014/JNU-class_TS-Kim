@@ -39,7 +39,7 @@ FIXED_CONDITIONS = {
     "hot_inlet": {     # Water (고온부)
         "fluid":  "Water",
         "T_in":   600.0,            # K  (변경됨)
-        "m_dot":  1.5,              # kg/s
+        "m_dot":  3.0,              # kg/s
         "P_in":   15.0e6,           # 15.0 MPa  (변경됨)
     },
     "cold_inlet": {    # Water (저온부)
