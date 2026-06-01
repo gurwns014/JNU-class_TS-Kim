@@ -272,6 +272,112 @@ def plot_pressure_drop(result, A_flow_hot=1e-3, A_flow_cold=1e-3,
 
 
 # ============================================================
+# Plot Quality (x_cold) and Heat Flux vs Position
+# ============================================================
+def plot_quality_and_heatflux(result, fig=None):
+    """
+    Plot Cold side quality (x_cold) and heat flux (q_flux) vs position.
+    
+    Uses twin y-axes:
+      - Left axis: Heat Flux [W/m²]
+      - Right axis: Quality [-]
+    
+    Also shades the two-phase region.
+    """
+    nd = result["node_data"]
+    L = result["L"]
+    
+    # Extract data
+    x_pos = [n["x_pos"] for n in nd]
+    q_flux = [n.get("q_flux", 0) for n in nd]
+    x_quality = [n.get("x_cold", 0) for n in nd]
+    rg_c = [n.get("regime_cold", "") for n in nd]
+    
+    if fig is None:
+        fig = plt.figure(figsize=(12, 6.5))
+    fig.clear()
+    
+    ax_q = fig.add_subplot(1, 1, 1)
+    
+    # --- Left axis: Heat Flux ---
+    line_qflux, = ax_q.plot(x_pos, q_flux, "-o", color="#d62728", lw=2.2,
+                              ms=5, markevery=max(1, len(x_pos)//15),
+                              label="Heat Flux $q''$", zorder=3)
+    ax_q.set_xlabel("Position [m]", fontsize=12, fontweight="bold")
+    ax_q.set_ylabel("Heat Flux  $q''$  [W/m²]", fontsize=11, color="#d62728",
+                     fontweight="bold")
+    ax_q.tick_params(axis="y", labelcolor="#d62728")
+    ax_q.grid(alpha=0.3, ls=":")
+    ax_q.set_axisbelow(True)
+    
+    # --- Right axis: Quality ---
+    ax_x = ax_q.twinx()
+    line_xqual, = ax_x.plot(x_pos, x_quality, "-s", color="#1f77b4", lw=2.2,
+                              ms=5, markevery=max(1, len(x_pos)//15),
+                              label="Quality $x$", zorder=3)
+    ax_x.set_ylabel("Quality  $x$  [-]", fontsize=11, color="#1f77b4",
+                     fontweight="bold")
+    ax_x.tick_params(axis="y", labelcolor="#1f77b4")
+    ax_x.set_ylim(-0.05, 1.05)
+    
+    # --- Two-phase region shading ---
+    onset_x = end_x = None
+    for i in range(1, len(rg_c)):
+        if onset_x is None and rg_c[i] == "two_phase" \
+           and rg_c[i-1] in ("subcooled", "init"):
+            onset_x = nd[i]["x_pos"]
+        if end_x is None and rg_c[i] in ("superheated", "post_dryout") \
+           and rg_c[i-1] == "two_phase":
+            end_x = nd[i]["x_pos"]
+    
+    if onset_x is not None:
+        right = end_x if end_x is not None else x_pos[-1]
+        ax_q.axvspan(onset_x, right, alpha=0.15, color="orange",
+                      label="Two-phase region", zorder=1)
+    
+    # --- Post-dryout region shading ---
+    pd_x = None
+    for i in range(1, len(rg_c)):
+        if pd_x is None and rg_c[i] == "post_dryout":
+            pd_x = nd[i]["x_pos"]
+    if pd_x is not None:
+        ax_q.axvspan(pd_x, x_pos[-1], alpha=0.15, color="red",
+                      label="Post-dryout region", zorder=1)
+    
+    # --- Final value annotations ---
+    if q_flux:
+        ax_q.text(x_pos[-1], q_flux[-1],
+                   f"  {q_flux[-1]:.0f} W/m²",
+                   fontsize=9, color="#d62728", va="center", ha="left",
+                   fontweight="bold")
+    if x_quality:
+        ax_x.text(x_pos[-1], x_quality[-1],
+                   f"  {x_quality[-1]:.4f}",
+                   fontsize=9, color="#1f77b4", va="center", ha="left",
+                   fontweight="bold")
+    
+    # --- Legend (combined from both axes) ---
+    handles_q = [line_qflux, line_xqual]
+    if onset_x is not None:
+        from matplotlib.patches import Patch
+        handles_q.append(Patch(facecolor="orange", alpha=0.25,
+                                label="Two-phase region"))
+    if pd_x is not None:
+        from matplotlib.patches import Patch
+        handles_q.append(Patch(facecolor="red", alpha=0.25,
+                                label="Post-dryout region"))
+    
+    ax_q.legend(handles=handles_q, loc="upper left", fontsize=10,
+                 framealpha=0.95)
+    
+    ax_q.set_title("Cold Side: Quality & Heat Flux vs Position  (Counter-Current)",
+                    fontsize=13, fontweight="bold", pad=15)
+    
+    fig.tight_layout()
+    return fig
+
+
+# ============================================================
 # Convenience runner — one call does everything
 # ============================================================
 def save_pressure_csv(result, x_arr, dP_h, dP_c, path="pressure_drop.csv"):
@@ -374,6 +480,11 @@ if __name__ == "__main__":
                                     xdi_corr="del_col",
                                     save_path="pressure_drop.png",
                                     save_csv="pressure_drop.csv")
+
+    # Plot quality and heat flux
+    fig_qf = plot_quality_and_heatflux(result)
+    fig_qf.savefig("quality_heatflux.png", dpi=130, bbox_inches="tight")
+    print(f"  PNG saved: quality_heatflux.png")
 
     nd = result["node_data"]
     print(f"\n  L = {result['L']} m  ({result['N']} nodes)")
