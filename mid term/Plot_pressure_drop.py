@@ -15,8 +15,9 @@ Hot side is single-phase throughout (no boiling), so its dP comes
 from the Solver result directly.
 """
 
-import matplotlib.pyplot as plt
 import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend for headless execution
+import matplotlib.pyplot as plt
 matplotlib.rcParams["axes.unicode_minus"] = False
 
 from Pressure_drop import dpdz_two_phase
