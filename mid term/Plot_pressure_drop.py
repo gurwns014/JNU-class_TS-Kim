@@ -277,31 +277,41 @@ def plot_pressure_drop(result, A_flow_hot=1e-3, A_flow_cold=1e-3,
 def save_pressure_csv(result, x_arr, dP_h, dP_c, path="pressure_drop.csv"):
     """
     Save pressure drop + temperature data to CSV.
-    Columns: x_pos, T_hot_C, T_cold_C, regime_cold,
-             dP_hot_kPa, dP_cold_kPa
+    Columns: x_pos, T_hot_C, T_cold_C, regime_cold, x_di,
+             x_quality, dP_hot_kPa, dP_cold_kPa,
+             h_cold_W_m2K, h_hot_W_m2K, q_cell_W
+    regime_cold 값:
+      subcooled / two_phase / superheated / post_dryout  (dryout 발생 시)
     """
     import csv
     nd = result["node_data"]
     rows = []
-    L = result["L"]
     dP_c_disp = list(reversed(dP_c))   # Cold ΔP: 0 at x=L (inlet)
-    x_cold_axis = [L - x for x in x_arr]
 
     for i, n in enumerate(nd):
+        # dryout 발생 노드는 regime을 "post_dryout"으로 표시
+        regime = n.get("regime_cold", "")
+        if n.get("dryout", False):
+            regime = "post_dryout"
+
+        x_di_val = n.get("x_di", None)
+        x_di_str = round(x_di_val, 6) if x_di_val is not None else ""
+
         rows.append({
-            "x_pos_m":       round(n["x_pos"], 6),
-            "T_hot_C":       round(n["T_hot"] - 273.15, 4),
-            "T_cold_C":      round(n["T_cold"] - 273.15, 4),
-            "regime_cold":   n.get("regime_cold", ""),
-            "x_quality":     round(n.get("x_cold", 0), 6),
-            "dP_hot_kPa":    round(dP_h[i] / 1000, 6),
-            "dP_cold_kPa":   round(dP_c_disp[i] / 1000, 6),
-            "h_cold_W_m2K":  round(n.get("h_cold", 0), 4),
-            "h_hot_W_m2K":   round(n.get("h_hot", 0), 4),
-            "q_cell_W":      round(n.get("q_cell", 0), 4),
+            "x_pos_m":      round(n["x_pos"], 6),
+            "T_hot_C":      round(n["T_hot"] - 273.15, 4),
+            "T_cold_C":     round(n["T_cold"] - 273.15, 4),
+            "regime_cold":  regime,
+            "x_di":         x_di_str,
+            "x_quality":    round(n.get("x_cold", 0), 6),
+            "dP_hot_kPa":   round(dP_h[i] / 1000, 6),
+            "dP_cold_kPa":  round(dP_c_disp[i] / 1000, 6),
+            "h_cold_W_m2K": round(n.get("h_cold", 0), 4),
+            "h_hot_W_m2K":  round(n.get("h_hot", 0), 4),
+            "q_cell_W":     round(n.get("q_cell", 0), 4),
         })
 
-    fieldnames = ["x_pos_m", "T_hot_C", "T_cold_C", "regime_cold",
+    fieldnames = ["x_pos_m", "T_hot_C", "T_cold_C", "regime_cold", "x_di",
                   "x_quality", "dP_hot_kPa", "dP_cold_kPa",
                   "h_cold_W_m2K", "h_hot_W_m2K", "q_cell_W"]
     with open(path, "w", newline="", encoding="utf-8") as f:
@@ -316,6 +326,8 @@ def run_and_plot(L=1.0, N=100,
                   P_w_hot=0.628, P_w_cold=0.628,
                   P_hot=15e6, P_cold=6e6,
                   boil_corr="chen", two_phase_model="friedel",
+                  xdi_corr="del_col",
+                  postdryout_corr="dougall_rohsenow",
                   show_temperature=True, T_unit="C",
                   save_path=None, save_csv=None):
     """
@@ -330,6 +342,8 @@ def run_and_plot(L=1.0, N=100,
         geom_extra={"A_flow_hot": A_flow_hot, "A_flow_cold": A_flow_cold,
                     "P_w_hot":    P_w_hot,    "P_w_cold":    P_w_cold},
         boil_corr=boil_corr,
+        xdi_corr=xdi_corr,
+        postdryout_corr=postdryout_corr,
         shoot_tol=3.0, shoot_max=30
     )
     fig, (x_arr, dP_h, dP_c) = plot_pressure_drop(
@@ -357,6 +371,7 @@ if __name__ == "__main__":
     fig, result, _ = run_and_plot(L=1.0, N=100,
                                     boil_corr="chen",
                                     two_phase_model="friedel",
+                                    xdi_corr="del_col",
                                     save_path="pressure_drop.png",
                                     save_csv="pressure_drop.csv")
 
