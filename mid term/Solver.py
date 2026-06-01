@@ -20,7 +20,9 @@
 import math
 from Data_model import get_fixed_conditions, get_state, T_from_PH
 from Physics_engine import evaluate_node, friction_factor
-from Correlation import get_model, DittusBoelterModel
+from Correlation import (get_model, DittusBoelterModel,
+                          get_xdi, get_postdryout_model,
+                          _void_fraction_hom)
 
 try:
     from CoolProp.CoolProp import PropsSI
@@ -170,14 +172,40 @@ def compute_h_for_side(side_state, model, fluid, P, m_dot, A_flow, D_h, sat,
 
 
 # ============================================================
+# Dryout x_di 계산 헬퍼 (Solver 내부용)
+# ============================================================
+def _xdi_from_cell(cp, cold_state, cold_sat, geom, q_flux, P_H, P_F,
+                   xdi_model_name):
+    """현재 셀 cold 상태에서 x_di 계산. 실패 시 None."""
+    try:
+        G   = cold_state["m_dot"] / geom["A_flow_cold"]
+        P   = cold_state["P"]
+        P_r = P / cold_sat["P_crit"]
+        sat = cold_sat
+        s   = cp
+        kw  = dict(q_flux=q_flux, G=G, D_h=geom["D_h"],
+                   rho_l=s["rho_l"], rho_g=s["rho_g"],
+                   h_fg=sat["h_fg"], sigma=sat["sigma"],
+                   P_r=P_r, mu_l=s["mu_l"],
+                   P_H=P_H, P_F=P_F)
+        return get_xdi(xdi_model_name, **kw)
+    except Exception:
+        return None
+
+
+# ============================================================
 # 셀 단위 q-iteration (핵심)
 # ============================================================
 def cell_solve_q(hp, cp, hot_state, cold_state,
                   hot_sat, cold_sat, geom, dx,
-                  model, L_pipe, P_H, P_F):
+                  model, L_pipe, P_H, P_F,
+                  xdi_model=None, postdryout_model=None):
     """
     한 셀에서 q를 단상으로 초기화 → 비등 영역이면 q-iteration.
-    'model'은 BaseBoilCorrelation 인스턴스 (어댑터).
+    x >= x_di (dryout) 이면 post-dryout 상관식으로 자동 전환.
+
+    xdi_model       : str ("kim_mudawar_2013" 등) 또는 None
+    postdryout_model: BasePostDryout 인스턴스 또는 None
     """
     T_hot, T_cold = hp["T"], cp["T"]
     dT     = T_hot - T_cold
@@ -185,7 +213,7 @@ def cell_solve_q(hp, cp, hot_state, cold_state,
     dA      = P_w_avg * dx
     R_wall  = geom["t_wall"] / geom["k_wall"]
 
-    # ── Step 1: q 초기 가정 ──
+    # ── Step 1: 단상 초기 h, q ──
     h_hot_sp  = single_phase_h(hp, hot_state["fluid"],
                                 hot_state["P"], hot_state["m_dot"],
                                 geom["A_flow_hot"], geom["D_h"],
@@ -200,7 +228,13 @@ def cell_solve_q(hp, cp, hot_state, cold_state,
     hot_2p  = (hp["regime"] == "two_phase")
     cold_2p = (cp["regime"] == "two_phase")
 
-    # 단상-단상이면 iteration 불필요
+    # ── 단상-단상: iteration 불필요 ──
+    # x_di 계산 시도 (항상)
+    x_di_val = None
+    if cold_2p and xdi_model is not None:
+        x_di_val = _xdi_from_cell(cp, cold_state, cold_sat, geom,
+                                   q_flux_0, P_H, P_F, xdi_model)
+    
     if not (hot_2p or cold_2p):
         return dict(
             h_hot=h_hot_sp["h"], h_cold=h_cold_sp["h"],
@@ -209,13 +243,141 @@ def cell_solve_q(hp, cp, hot_state, cold_state,
             V_hot=h_hot_sp["V"],  V_cold=h_cold_sp["V"],
             f_hot=h_hot_sp["f"],  f_cold=h_cold_sp["f"],
             n_iter=0, q_converged=True, T_wall=None,
+            dryout=False, x_di=x_di_val,
         )
 
-    # ── Step 2: q-iteration ──
+    # ── Dryout 체크 (Cold 측 two-phase 일 때만) ──
+    dryout_active = False
+    if cold_2p and xdi_model is not None and postdryout_model is not None:
+        if x_di_val is None:  # 아직 계산 안 됐으면 계산
+            x_di_val = _xdi_from_cell(cp, cold_state, cold_sat, geom,
+                                       q_flux_0, P_H, P_F, xdi_model)
+        if x_di_val is not None and cp["x"] >= x_di_val:
+            dryout_active = True
+
+    if dryout_active:
+        # post-dryout h 계산: q-iteration 불필요
+        ctx_pd = build_ctx(cp, cold_state["fluid"], cold_state["P"],
+                            cold_state["m_dot"], geom["A_flow_cold"],
+                            geom["D_h"], cold_sat,
+                            q_flux_0, None, None,
+                            L_pipe, P_H, P_F, "heating", False)
+        h_pd = postdryout_model.compute_h(cp, ctx_pd)
+        U_pd = 1.0 / (1.0/h_hot_sp["h"] + R_wall + 1.0/h_pd)
+        q_pd = U_pd * dT
+        return dict(
+            h_hot=h_hot_sp["h"], h_cold=h_pd,
+            U=U_pd, q_flux=q_pd, q_cell=q_pd*dA, dA=dA,
+            Re_hot=h_hot_sp["Re"], Re_cold=h_cold_sp["Re"],
+            V_hot=h_hot_sp["V"],  V_cold=h_cold_sp["V"],
+            f_hot=h_hot_sp["f"],  f_cold=h_cold_sp["f"],
+            n_iter=0, q_converged=True, T_wall=None,
+            dryout=True, x_di=x_di_val,
+        )
+
+    # ── Step 2: q-iteration (비등, dryout 없음) ──
     # 어댑터가 q를 요구하지 않으면 1-pass로 끝낼 수 있지만,
     # T_wall이나 P_v가 필요한 경우(Chen, Zhang)는 어쨌든 한 번은 갱신 필요.
     # 안전하게 통일된 루프로 처리.
     needs_loop = (model.requires_q or model.requires_Twall or model.requires_Pv)
+
+    q_flux  = q_flux_0
+    last_q  = q_flux
+    h_hot_info, h_cold_info = h_hot_sp, h_cold_sp
+    converged = False
+    n_iter    = 0
+    T_wall_avg = None
+
+    max_it = Q_ITER_MAX if needs_loop else 1
+
+    for it in range(1, max_it + 1):
+        n_iter = it
+
+        # T_wall (필요할 때만 계산하지만, 한 번 계산해서 ctx에 넣어줘도 무방)
+        _, _, T_wall_avg = estimate_T_wall(
+            T_hot, T_cold, h_hot_info["h"], h_cold_info["h"], q_flux
+        )
+
+        # P_v 양측 fluid별로 (필요한 경우만)
+        if model.requires_Pv:
+            P_v_hot  = saturation_pressure_at(hot_state["fluid"],  T_wall_avg)
+            P_v_cold = saturation_pressure_at(cold_state["fluid"], T_wall_avg)
+        else:
+            P_v_hot = P_v_cold = None
+
+        # 양측 ctx 빌드
+        ctx_hot = build_ctx(hp, hot_state["fluid"], hot_state["P"],
+                             hot_state["m_dot"], geom["A_flow_hot"], geom["D_h"],
+                             hot_sat, q_flux, T_wall_avg, P_v_hot,
+                             L_pipe, P_H, P_F, "cooling", hot_2p)
+        ctx_cold = build_ctx(cp, cold_state["fluid"], cold_state["P"],
+                              cold_state["m_dot"], geom["A_flow_cold"], geom["D_h"],
+                              cold_sat, q_flux, T_wall_avg, P_v_cold,
+                              L_pipe, P_H, P_F, "heating", cold_2p)
+
+        h_hot_info  = compute_h_for_side(hp, model, hot_state["fluid"],
+                                          hot_state["P"], hot_state["m_dot"],
+                                          geom["A_flow_hot"], geom["D_h"],
+                                          hot_sat, ctx_hot, "cooling")
+        h_cold_info = compute_h_for_side(cp, model, cold_state["fluid"],
+                                          cold_state["P"], cold_state["m_dot"],
+                                          geom["A_flow_cold"], geom["D_h"],
+                                          cold_sat, ctx_cold, "heating")
+
+        U_new  = 1.0 / (1.0/h_hot_info["h"] + R_wall + 1.0/h_cold_info["h"])
+        q_new  = U_new * dT
+
+        if needs_loop:
+            err = abs(q_new - last_q) / max(abs(last_q), 1e-3)
+            if err < Q_ITER_TOL:
+                converged = True
+                break
+            # under-relaxation
+            q_flux = Q_RELAX * q_new + (1.0 - Q_RELAX) * last_q
+            last_q = q_flux
+        else:
+            q_flux = q_new
+            converged = True
+            break
+
+    U_final = 1.0 / (1.0/h_hot_info["h"] + R_wall + 1.0/h_cold_info["h"])
+
+    return dict(
+        h_hot=h_hot_info["h"], h_cold=h_cold_info["h"],
+        U=U_final, q_flux=q_flux, q_cell=q_flux*dA, dA=dA,
+        Re_hot=h_hot_info["Re"], Re_cold=h_cold_info["Re"],
+        V_hot=h_hot_info["V"],  V_cold=h_cold_info["V"],
+        f_hot=h_hot_info["f"],  f_cold=h_cold_info["f"],
+        n_iter=n_iter, q_converged=converged, T_wall=T_wall_avg,
+        dryout=False, x_di=x_di_val,
+    )
+
+
+# ============================================================
+# 셀 진행 (엔탈피 + 압력)
+# ============================================================
+def advance_cell(hot_state, cold_state, hot_sat, cold_sat, geom, dx,
+                  model, L_pipe, P_H, P_F,
+                  xdi_model=None, postdryout_model=None):
+    hp = get_phase_state(hot_state["fluid"],  hot_state["P"],
+                          hot_state["H"], hot_sat)
+    cp = get_phase_state(cold_state["fluid"], cold_state["P"],
+                          cold_state["H"], cold_sat)
+
+    res = cell_solve_q(hp, cp, hot_state, cold_state,
+                        hot_sat, cold_sat, geom, dx,
+                        model, L_pipe, P_H, P_F,
+                        xdi_model=xdi_model,
+                        postdryout_model=postdryout_model)
+    q_cell = res["q_cell"]
+
+    H_hot_new  = hot_state["H"]  - q_cell / hot_state["m_dot"]
+    H_cold_new = cold_state["H"] - q_cell / cold_state["m_dot"]
+
+    dP_hot  = (res["f_hot"]  * (dx/geom["D_h"])
+               * hp["rho"]   * res["V_hot"]**2 / 2.0)
+    dP_cold = (res["f_cold"] * (dx/geom["D_h"])
+               * cp["rho"]   * res["V_cold"]**2 / 2.0)
 
     q_flux  = q_flux_0
     last_q  = q_flux
@@ -293,7 +455,8 @@ def cell_solve_q(hp, cp, hot_state, cold_state,
 # 셀 진행 (엔탈피 + 압력)
 # ============================================================
 def advance_cell(hot_state, cold_state, hot_sat, cold_sat, geom, dx,
-                  model, L_pipe, P_H, P_F):
+                  model, L_pipe, P_H, P_F,
+                  xdi_model=None, postdryout_model=None):
     hp = get_phase_state(hot_state["fluid"],  hot_state["P"],
                           hot_state["H"], hot_sat)
     cp = get_phase_state(cold_state["fluid"], cold_state["P"],
@@ -301,7 +464,9 @@ def advance_cell(hot_state, cold_state, hot_sat, cold_sat, geom, dx,
 
     res = cell_solve_q(hp, cp, hot_state, cold_state,
                         hot_sat, cold_sat, geom, dx,
-                        model, L_pipe, P_H, P_F)
+                        model, L_pipe, P_H, P_F,
+                        xdi_model=xdi_model,
+                        postdryout_model=postdryout_model)
     q_cell = res["q_cell"]
 
     H_hot_new  = hot_state["H"]  - q_cell / hot_state["m_dot"]
@@ -327,10 +492,15 @@ def advance_cell(hot_state, cold_state, hot_sat, cold_sat, geom, dx,
     hot_next["T"] = hp_n["T"]; hot_next["x"] = hp_n["x"]
     cold_next["T"]= cp_n["T"]; cold_next["x"]= cp_n["x"]
 
+    # Dryout 여부에 따라 regime_cold 결정
+    regime_cold = cp["regime"]
+    if res.get("dryout", False):
+        regime_cold = "post_dryout"
+
     info = {
         "T_hot": hp["T"], "T_cold": cp["T"],
         "x_hot": hp["x"], "x_cold": cp["x"],
-        "regime_hot": hp["regime"], "regime_cold": cp["regime"],
+        "regime_hot": hp["regime"], "regime_cold": regime_cold,
         "h_hot": res["h_hot"], "h_cold": res["h_cold"],
         "Re_hot": res["Re_hot"], "Re_cold": res["Re_cold"],
         "U": res["U"], "q_cell": q_cell, "q_flux": res["q_flux"],
@@ -338,6 +508,8 @@ def advance_cell(hot_state, cold_state, hot_sat, cold_sat, geom, dx,
         "dP_hot": dP_hot, "dP_cold": dP_cold,
         "n_iter_q": res["n_iter"], "q_converged": res["q_converged"],
         "T_wall": res["T_wall"],
+        "dryout": res.get("dryout", False),
+        "x_di":   res.get("x_di",   None),
     }
     return hot_next, cold_next, info
 
@@ -604,12 +776,13 @@ def solve_counter_current(L, N, geom_extra, boil_corr="chen",
                            P_H=None, P_F=None,
                            T_cold_x0_guess=None,
                            shoot_tol=SHOOT_TOL, shoot_max=SHOOT_MAX,
+                           xdi_corr=None,
+                           postdryout_corr="dougall_rohsenow",
                            verbose=False):
     """
-    L         : 채널 길이 [m]
-    N         : 노드 수
-    geom_extra: dict(A_flow_hot, A_flow_cold, P_w_hot, P_w_cold)
-    boil_corr : 비등 상관식 이름 (Correlation.py의 어댑터 이름)
+    대향류 Shooting method 솔버.
+    xdi_corr       : x_di 모델명 (예: "kim_mudawar_2013"), None 이면 dryout 무시
+    postdryout_corr: post-dryout HTC 모델명 (예: "dougall_rohsenow")
     """
     c  = get_fixed_conditions()
     fh = c["hot_inlet"];  fc = c["cold_inlet"]
@@ -628,23 +801,23 @@ def solve_counter_current(L, N, geom_extra, boil_corr="chen",
     if P_H is None: P_H = math.pi * geom["D_h"]
     if P_F is None: P_F = math.pi * geom["D_h"]
 
-    # 어댑터 인스턴스 한 번만 생성 (모든 셀에서 재사용)
-    model = get_model(boil_corr)
+    model    = get_model(boil_corr)
+    pd_model = (get_postdryout_model(postdryout_corr)
+                if xdi_corr is not None else None)
+
     if verbose:
-        print(f"  [Model] {model.name}  requires: "
-              f"q={model.requires_q}, Twall={model.requires_Twall}, "
-              f"Pv={model.requires_Pv}, M={model.requires_M}, "
-              f"geom={model.requires_geom}")
+        print(f"  [Boiling]  {model.name}")
+        if xdi_corr:
+            print(f"  [x_di]     {xdi_corr}")
+            print(f"  [Post-DO]  {pd_model.name}")
 
     dx = L / N
     H_hot_in  = PropsSI('H', 'T', fh["T_in"], 'P', fh["P_in"], fh["fluid"])
     H_cold_in = PropsSI('H', 'T', fc["T_in"], 'P', fc["P_in"], fc["fluid"])
 
-    # Outer shooting
     T_lo = fc["T_in"] + 0.01
     T_hi = fh["T_in"] - 0.01
     history = []
-    # safe default so best is never None
     best = (0.5*(T_lo+T_hi), [], 9999.0)
 
     for sh_it in range(shoot_max):
@@ -671,6 +844,7 @@ def solve_counter_current(L, N, geom_extra, boil_corr="chen",
             "q_cell": 0.0, "q_flux": 0.0,
             "dT": hot["T"]-cold["T"],
             "n_iter_q": 0, "q_converged": True, "T_wall": None,
+            "dryout": False, "x_di": None,
         }]
 
         diverged = False
@@ -678,7 +852,9 @@ def solve_counter_current(L, N, geom_extra, boil_corr="chen",
             try:
                 hot_n, cold_n, info = advance_cell(
                     hot, cold, hot_sat, cold_sat, geom, dx,
-                    model, L_pipe=L, P_H=P_H, P_F=P_F
+                    model, L_pipe=L, P_H=P_H, P_F=P_F,
+                    xdi_model=xdi_corr,
+                    postdryout_model=pd_model,
                 )
             except ValueError:
                 diverged = True
@@ -699,6 +875,8 @@ def solve_counter_current(L, N, geom_extra, boil_corr="chen",
                 "n_iter_q": info["n_iter_q"],
                 "q_converged": info["q_converged"],
                 "T_wall": info["T_wall"],
+                "dryout": info.get("dryout", False),
+                "x_di":   info.get("x_di",   None),
             })
 
         if diverged:
