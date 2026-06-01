@@ -156,15 +156,17 @@ def plot_pressure_drop(result, A_flow_hot=1e-3, A_flow_cold=1e-3,
     dP_h_kPa = [p/1000 for p in dP_h]
     dP_c_kPa = [p/1000 for p in dP_c]
 
-    # ── Pressure-drop display direction ──
-    # The user wants:
-    #   Hot  ΔP curve: left-up (high at x=0, zero at x=L)
-    #   Cold ΔP curve: right-up (zero at x=0, high at x=L)
-    # Achieve this by plotting Hot ΔP at (L - x), Cold ΔP at x (raw).
+    # Counter-current data from solve_counter_current:
+    #   x_pos = 0  → Hot inlet  (hot),  Cold outlet (warm)
+    #   x_pos = L  → Hot outlet (warm), Cold inlet  (cold ← 530K)
+    # So we plot everything vs x_pos directly — no flipping needed.
+    # Hot ΔP grows 0→L (inlet to outlet), already left→right.
+    # Cold ΔP also accumulated 0→L in solver, but physically cold
+    # enters at x=L, so we flip Cold ΔP to show it growing from x=L.
     L = result["L"]
-    x_hot_axis  = [L - x for x in x_arr]   # flip Hot to left-up
-    x_cold_axis = list(x_arr)              # Cold stays right-up (data already
-                                            # accumulated from x=0)
+    x_hot_axis  = list(x_arr)               # Hot: ΔP 0 at x=0, max at x=L
+    x_cold_axis = [L - x for x in x_arr]    # Cold: ΔP 0 at x=L (inlet), max at x=0 (outlet)
+    dP_c_kPa_disp = list(reversed(dP_c_kPa))  # reverse so x=L is 0, x=0 is max
 
     if fig is None:
         fig = plt.figure(figsize=(11, 6.5))
@@ -174,19 +176,19 @@ def plot_pressure_drop(result, A_flow_hot=1e-3, A_flow_cold=1e-3,
     # --- pressure drop curves (left axis) ---
     line_dPh, = ax.plot(x_hot_axis, dP_h_kPa, "-", color="#b22222", lw=2.2,
                           marker="o", ms=4, markevery=max(1, len(x_arr)//20),
-                          label="Hot $\\Delta P$")
-    line_dPc, = ax.plot(x_cold_axis, dP_c_kPa, "-", color="#1565c0", lw=2.2,
+                          label="Hot $\\Delta P$  (0→L)")
+    line_dPc, = ax.plot(x_cold_axis, dP_c_kPa_disp, "-", color="#1565c0", lw=2.2,
                           marker="s", ms=4, markevery=max(1, len(x_arr)//20),
-                          label=f"Cold $\\Delta P$  [{two_phase_model}]")
+                          label=f"Cold $\\Delta P$  (L→0)  [{two_phase_model}]")
 
-    ax.set_xlabel("Position L [m]", fontsize=11)
+    ax.set_xlabel("Position [m]", fontsize=11)
     ax.set_ylabel("Pressure drop  $\\Delta P$  [kPa]", fontsize=11)
     ax.grid(alpha=0.3, ls=":")
 
-    # --- two-phase region shading (Cold flow direction: enters at x=L) ---
+    # --- two-phase region shading ---
     nd = result["node_data"]
     onset_x = end_x = None
-    rg_c = [n["regime_cold"] for n in nd]
+    rg_c = [n.get("regime_cold","") for n in nd]
     for i in range(1, len(rg_c)):
         if onset_x is None and rg_c[i] == "two_phase" \
            and rg_c[i-1] in ("subcooled", "init"):
@@ -196,19 +198,16 @@ def plot_pressure_drop(result, A_flow_hot=1e-3, A_flow_cold=1e-3,
             end_x = nd[i]["x_pos"]
     if onset_x is not None:
         right = end_x if end_x is not None else x_arr[-1]
-        left_disp  = onset_x
-        right_disp = right
-        ax.axvspan(left_disp, right_disp, alpha=0.12, color="orange")
+        # Cold enters at x=L, so two-phase region is shown as-is (no flip)
+        ax.axvspan(onset_x, right, alpha=0.12, color="orange")
 
     # --- final value annotations (pressure) ---
     if dP_h_kPa:
-        # Hot peak is now at x=0 (left side)
         ax.text(x_hot_axis[-1], dP_h_kPa[-1],
-                f"{dP_h_kPa[-1]:.2f} kPa  ",
-                fontsize=9, color="#b22222", va="center", ha="right")
-        # Cold peak is at x=L (right side)
-        ax.text(x_cold_axis[-1], dP_c_kPa[-1],
-                f"  {dP_c_kPa[-1]:.2f} kPa",
+                f"  {dP_h_kPa[-1]:.2f} kPa",
+                fontsize=9, color="#b22222", va="center", ha="left")
+        ax.text(x_cold_axis[-1], dP_c_kPa_disp[-1],
+                f"  {dP_c_kPa_disp[-1]:.2f} kPa",
                 fontsize=9, color="#1565c0", va="center", ha="left")
 
     # --- temperature overlay (twin right axis) ---
@@ -221,11 +220,14 @@ def plot_pressure_drop(result, A_flow_hot=1e-3, A_flow_cold=1e-3,
         x_pos = [n["x_pos"] for n in nd]
         unit = "°C" if T_unit == "C" else "K"
 
+        # No flip — data is already correct:
+        #   x=0: T_cold=warm (outlet), T_hot=hot (inlet)
+        #   x=L: T_cold=cold (inlet),  T_hot=warm (outlet)
         ax_T = ax.twinx()
         line_Th, = ax_T.plot(x_pos, T_h, "--", color="#d62728", lw=1.6,
-                               alpha=0.75, label="Hot T  (x: 0 → L)")
+                               alpha=0.75, label="Hot T")
         line_Tc, = ax_T.plot(x_pos, T_c, "--", color="#2ca02c", lw=1.6,
-                               alpha=0.85, label="Cold T  (x: 0 → L)")
+                               alpha=0.85, label="Cold T")
         ax_T.set_ylabel(f"Temperature [{unit}]", fontsize=11, color="#444")
         ax_T.tick_params(axis="y", labelcolor="#444")
         handles += [line_Th, line_Tc]
@@ -241,13 +243,15 @@ def plot_pressure_drop(result, A_flow_hot=1e-3, A_flow_cold=1e-3,
             pass
 
     # Inlet arrows on top
-    ymax_left = max(dP_h_kPa + dP_c_kPa)
+    ymax_left = max(dP_h_kPa + dP_c_kPa_disp)
+    # Hot enters at x=0 → arrow points right
     ax.annotate("", xy=(L*0.15, ymax_left*1.10), xytext=(0, ymax_left*1.10),
                  arrowprops=dict(arrowstyle="->", color="#b22222", lw=1.5),
                  annotation_clip=False)
     ax.text(L*0.075, ymax_left*1.13, "Hot in", color="#b22222",
              fontsize=9, ha="center", fontweight="bold")
 
+    # Cold enters at x=L → arrow points left
     ax.annotate("", xy=(L*0.85, ymax_left*1.10), xytext=(L, ymax_left*1.10),
                  arrowprops=dict(arrowstyle="->", color="#1565c0", lw=1.5),
                  annotation_clip=False)
@@ -270,16 +274,54 @@ def plot_pressure_drop(result, A_flow_hot=1e-3, A_flow_cold=1e-3,
 # ============================================================
 # Convenience runner — one call does everything
 # ============================================================
+def save_pressure_csv(result, x_arr, dP_h, dP_c, path="pressure_drop.csv"):
+    """
+    Save pressure drop + temperature data to CSV.
+    Columns: x_pos, T_hot_C, T_cold_C, regime_cold,
+             dP_hot_kPa, dP_cold_kPa
+    """
+    import csv
+    nd = result["node_data"]
+    rows = []
+    L = result["L"]
+    dP_c_disp = list(reversed(dP_c))   # Cold ΔP: 0 at x=L (inlet)
+    x_cold_axis = [L - x for x in x_arr]
+
+    for i, n in enumerate(nd):
+        rows.append({
+            "x_pos_m":       round(n["x_pos"], 6),
+            "T_hot_C":       round(n["T_hot"] - 273.15, 4),
+            "T_cold_C":      round(n["T_cold"] - 273.15, 4),
+            "regime_cold":   n.get("regime_cold", ""),
+            "x_quality":     round(n.get("x_cold", 0), 6),
+            "dP_hot_kPa":    round(dP_h[i] / 1000, 6),
+            "dP_cold_kPa":   round(dP_c_disp[i] / 1000, 6),
+            "h_cold_W_m2K":  round(n.get("h_cold", 0), 4),
+            "h_hot_W_m2K":   round(n.get("h_hot", 0), 4),
+            "q_cell_W":      round(n.get("q_cell", 0), 4),
+        })
+
+    fieldnames = ["x_pos_m", "T_hot_C", "T_cold_C", "regime_cold",
+                  "x_quality", "dP_hot_kPa", "dP_cold_kPa",
+                  "h_cold_W_m2K", "h_hot_W_m2K", "q_cell_W"]
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        w.writerows(rows)
+    return path
+
+
 def run_and_plot(L=1.0, N=100,
                   A_flow_hot=1e-3, A_flow_cold=1e-3,
                   P_w_hot=0.628, P_w_cold=0.628,
                   P_hot=15e6, P_cold=6e6,
                   boil_corr="chen", two_phase_model="friedel",
                   show_temperature=True, T_unit="C",
-                  save_path=None):
+                  save_path=None, save_csv=None):
     """
-    Run simulation + plot in one call.
-    Default L = 1.0 m (steep cooling visualization).
+    Run simulation (counter-current) + plot in one call.
+      save_path : PNG 저장 경로 (예: "result.png")
+      save_csv  : CSV 저장 경로 (예: "result.csv"),  None이면 저장 안 함
     """
     from Solver import solve_counter_current
 
@@ -287,9 +329,10 @@ def run_and_plot(L=1.0, N=100,
         L=L, N=N,
         geom_extra={"A_flow_hot": A_flow_hot, "A_flow_cold": A_flow_cold,
                     "P_w_hot":    P_w_hot,    "P_w_cold":    P_w_cold},
-        boil_corr=boil_corr
+        boil_corr=boil_corr,
+        shoot_tol=3.0, shoot_max=30
     )
-    fig, data = plot_pressure_drop(
+    fig, (x_arr, dP_h, dP_c) = plot_pressure_drop(
         result,
         A_flow_hot=A_flow_hot, A_flow_cold=A_flow_cold,
         P_hot=P_hot, P_cold=P_cold,
@@ -298,7 +341,12 @@ def run_and_plot(L=1.0, N=100,
     )
     if save_path:
         fig.savefig(save_path, dpi=130, bbox_inches="tight")
-    return fig, result, data
+        print(f"  PNG saved: {save_path}")
+    if save_csv:
+        save_pressure_csv(result, x_arr, dP_h, dP_c, path=save_csv)
+        print(f"  CSV saved: {save_csv}")
+
+    return fig, result, (x_arr, dP_h, dP_c)
 
 
 # ============================================================
@@ -309,12 +357,12 @@ if __name__ == "__main__":
     fig, result, _ = run_and_plot(L=1.0, N=100,
                                     boil_corr="chen",
                                     two_phase_model="friedel",
-                                    save_path="pressure_drop.png")
+                                    save_path="pressure_drop.png",
+                                    save_csv="pressure_drop.csv")
 
     nd = result["node_data"]
     print(f"\n  L = {result['L']} m  ({result['N']} nodes)")
     print(f"  Hot   in/out: {nd[0]['T_hot']-273.15:.2f} / "
           f"{nd[-1]['T_hot']-273.15:.2f} °C")
-    print(f"  Cold  in/out: {nd[0]['T_cold']-273.15:.2f} / "
-          f"{nd[-1]['T_cold']-273.15:.2f} °C")
-    print(f"  Saved: pressure_drop.png")
+    print(f"  Cold  in/out: {nd[-1]['T_cold']-273.15:.2f} / "
+          f"{nd[0]['T_cold']-273.15:.2f} °C")

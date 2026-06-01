@@ -487,14 +487,14 @@ if __name__ == "__main__":
     from Data_model import FIXED_CONDITIONS
     FIXED_CONDITIONS["cold_inlet"]["m_dot"] = 0.05
 
-    from Solver import solve_parallel
+    from Solver import solve_counter_current
 
     print("[Visualization] running test...")
-    result = solve_parallel(
+    result = solve_counter_current(
         L=6.0, N=150,
         geom_extra={"A_flow_hot": 1e-3, "A_flow_cold": 1e-3,
                     "P_w_hot": 0.628, "P_w_cold": 0.628},
-        boil_corr="chen"
+        boil_corr="chen", shoot_tol=3.0, shoot_max=30
     )
     print_summary(result)
     f_png, f_csv = save_plots(result, prefix="cold_water")

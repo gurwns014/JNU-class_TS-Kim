@@ -644,7 +644,8 @@ def solve_counter_current(L, N, geom_extra, boil_corr="chen",
     T_lo = fc["T_in"] + 0.01
     T_hi = fh["T_in"] - 0.01
     history = []
-    best = None
+    # safe default so best is never None
+    best = (0.5*(T_lo+T_hi), [], 9999.0)
 
     for sh_it in range(shoot_max):
         T_guess = T_cold_x0_guess if (sh_it == 0 and T_cold_x0_guess) \
@@ -715,7 +716,8 @@ def solve_counter_current(L, N, geom_extra, boil_corr="chen",
                   f"T_cold(x=L)={T_cold_xL:.3f} | err={diff:+.3f}")
 
         if abs(diff) < shoot_tol:
-            return dict(L=L, N=N, model=model.name, node_data=node_data,
+            return dict(L=L, N=N, model=model.name, mode="counter",
+                         node_data=node_data,
                          converged=True, shoot_history=history,
                          T_cold_out=node_data[0]["T_cold"],
                          T_hot_out=node_data[-1]["T_hot"])
@@ -726,7 +728,10 @@ def solve_counter_current(L, N, geom_extra, boil_corr="chen",
             T_lo = T_guess
 
     T_guess, node_data, diff = best
-    return dict(L=L, N=N, model=model.name, node_data=node_data,
+    if not node_data:
+        node_data = [{"T_cold": fc["T_in"], "T_hot": fh["T_in"]}]
+    return dict(L=L, N=N, model=model.name, mode="counter",
+                 node_data=node_data,
                  converged=False, shoot_history=history,
                  T_cold_out=node_data[0]["T_cold"],
                  T_hot_out=node_data[-1]["T_hot"])
