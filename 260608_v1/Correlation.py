@@ -770,70 +770,7 @@ def list_models():
 
 
 # ════════════════════════════════════════════════════════════════
-#  SECTION: SUBCOOLED BOILING (ONB check + h_tp)
-# ════════════════════════════════════════════════════════════════
-# 적용 조건 (subcooled 구간):
-#   (T_wall - T_sat) > (T_wall - T_sat)_ONB  → h_subcooled 사용
-#   else                                       → Dittus-Boelter 유지
-
-def bergles_rohsenow_onb(q_flux, P_Pa):
-    """
-    Bergles & Rohsenow (1964) — Onset of Nucleate Boiling (ONB)
-      (T_wall - T_sat)_ONB = 0.556 * (q'' / (1082 * P^1.156))^n
-      n = 0.463 * P^0.0234
-      P in bar,  q'' in W/m²
-    Returns: ΔT_ONB [K]  (= T_wall_min for boiling to start)
-    """
-    P_bar = P_Pa / 1e5
-    P_bar = max(P_bar, 1e-3)
-    n     = 0.463 * P_bar**0.0234
-    q_pos = max(q_flux, 1e-3)
-    return 0.556 * (q_pos / (1082.0 * P_bar**1.156))**n
-
-
-def h_subcooled_boiling(G, D_h, q_flux, mu_l, k_l, Cp_l, h_fg,
-                         T_cold, T_sat, mu_l_w=None):
-    """
-    Subcooled boiling HTC (image 1 correlation):
-      h_tp   = ψ · h_sp,l
-      h_sp,l = 0.023 · Re_l^0.8 · Pr_l^0.4 · (μ_l,b/μ_l,w)^0.262 · k_l/D
-      ψ      = 267 · Bo^0.86 · Ja*^{-0.6} · Pr_l^0.23
-      Ja*    = c_pl · ΔT_sub / h_fg     (ΔT_sub = T_sat - T_cold)
-      Bo     = q'' / (G · h_fg)
-
-    Parameters
-    ----------
-    G       : mass flux [kg/m²s]
-    D_h     : hydraulic diameter [m]
-    q_flux  : heat flux [W/m²]
-    mu_l    : liquid viscosity at bulk temp [Pa·s]
-    k_l     : liquid thermal conductivity [W/mK]
-    Cp_l    : liquid specific heat [J/kgK]
-    h_fg    : latent heat [J/kg]
-    T_cold  : bulk (cold) temperature [K]
-    T_sat   : saturation temperature [K]
-    mu_l_w  : liquid viscosity at wall temp [Pa·s] (None → use mu_l)
-    """
-    if mu_l_w is None:
-        mu_l_w = mu_l   # viscosity correction ≈ 1 when not provided
-
-    Re_l   = G * D_h / max(mu_l, 1e-12)
-    Pr_l   = mu_l * Cp_l / max(k_l, 1e-12)
-    visc_c = (mu_l / max(mu_l_w, 1e-12))**0.262
-    h_sp_l = 0.023 * Re_l**0.8 * Pr_l**0.4 * visc_c * k_l / D_h
-
-    dT_sub  = max(T_sat - T_cold, 0.0)   # local subcooling [K]
-    Bo      = max(q_flux, 1e-3) / (G * max(h_fg, 1.0))
-    Ja_star = Cp_l * dT_sub / max(h_fg, 1.0)
-
-    if Ja_star < 1e-6 or Bo < 1e-15:
-        return h_sp_l   # no subcooling or negligible heat flux → plain SP
-
-    psi  = 267.0 * Bo**0.86 * Ja_star**(-0.6) * Pr_l**0.23
-    psi  = min(psi, 5.0)   # physical cap: h_tp ≤ 5 × h_sp,l
-    return psi * h_sp_l
-
-
+#  SECTION: DRYOUT QUALITY  (x_di)
 #  x >= x_di 이면 CHF 발생 → h_boiling → h_post_dryout 으로 전환
 # ════════════════════════════════════════════════════════════════
 

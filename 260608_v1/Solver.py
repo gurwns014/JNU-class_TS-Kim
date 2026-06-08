@@ -22,8 +22,7 @@ from Data_model import get_fixed_conditions, get_state, T_from_PH
 from Physics_engine import evaluate_node, friction_factor
 from Correlation import (get_model, DittusBoelterModel,
                           get_xdi, get_postdryout_model,
-                          _void_fraction_hom,
-                          bergles_rohsenow_onb, h_subcooled_boiling)
+                          _void_fraction_hom)
 
 try:
     from CoolProp.CoolProp import PropsSI
@@ -229,96 +228,19 @@ def cell_solve_q(hp, cp, hot_state, cold_state,
     hot_2p  = (hp["regime"] == "two_phase")
     cold_2p = (cp["regime"] == "two_phase")
 
-    # ── 단상-단상: ONB 체크 후 반환 ──
+    # ── 단상-단상: iteration 불필요 ──
     if not (hot_2p or cold_2p):
-        # --- ONB 체크 (Cold 측 subcooled 일 때만) ---
-        # Bergles & Rohsenow: (T_wall - T_sat)_ONB
-        # if (T_wall - T_sat) > (T_wall - T_sat)_ONB → h_subcooled 사용
-        h_cold_final = h_cold_sp
-        onb_active   = False
-
-        if cp["regime"] == "subcooled":
-            # 단상 q 초기 추정 → T_wall 계산
-            T_wh0, T_wc0, _ = estimate_T_wall(
-                T_hot, T_cold, h_hot_sp["h"], h_cold_sp["h"], q_flux_0)
-            T_sat_cold = cold_sat.get("T_sat")
-            P_cold_val = cold_state["P"]
-
-            if T_sat_cold is not None:
-                dT_wall_actual = T_wc0 - T_sat_cold
-                dT_onb         = bergles_rohsenow_onb(max(q_flux_0, 1.0), P_cold_val)
-
-                if dT_wall_actual > dT_onb:
-                    # ONB 발생 → h_subcooled 계산 후 h_sp,l보다 클 때만 교체
-                    onb_active = True
-                    q_flux_sb  = q_flux_0
-                    last_q_sb  = q_flux_sb
-                    h_sub_val  = h_cold_sp["h"]  # 초기값: 단상 h
-
-                    for _ in range(Q_ITER_MAX):
-                        try:
-                            try:
-                                mu_lw = PropsSI(
-                                    'V', 'T', T_wc0, 'P', P_cold_val,
-                                    cold_state["fluid"])
-                            except Exception:
-                                mu_lw = cp.get("mu_l", None)
-
-                            h_sub_new = h_subcooled_boiling(
-                                G=cold_state["m_dot"] / geom["A_flow_cold"],
-                                D_h=geom["D_h"],
-                                q_flux=q_flux_sb,
-                                mu_l=cp.get("mu_l", 1e-4),
-                                k_l=cp.get("k_l", 0.6),
-                                Cp_l=cp.get("Cp_l", 4200.0),
-                                h_fg=cold_sat.get("h_fg", 1e6),
-                                T_cold=T_cold,
-                                T_sat=T_sat_cold,
-                                mu_l_w=mu_lw,
-                            )
-                        except Exception:
-                            break
-
-                        # h_tp는 h_sp,l 이상인 경우만 사용
-                        h_sub_val = max(h_sub_new, h_cold_sp["h"])
-
-                        U_sb  = 1.0 / (1.0/h_hot_sp["h"] + R_wall
-                                        + 1.0/h_sub_val)
-                        q_new = U_sb * dT
-                        err   = abs(q_new - last_q_sb) / max(abs(last_q_sb), 1e-3)
-                        q_flux_sb = (Q_RELAX * q_new
-                                     + (1.0 - Q_RELAX) * last_q_sb)
-                        last_q_sb = q_flux_sb
-
-                        # T_wc 업데이트
-                        _, T_wc0, _ = estimate_T_wall(
-                            T_hot, T_cold, h_hot_sp["h"],
-                            h_sub_val, q_flux_sb)
-                        if err < Q_ITER_TOL:
-                            break
-
-                    class _SubBoilInfo:
-                        def __init__(self, h, sp):
-                            self.data = dict(sp); self.data["h"] = h
-                        def __getitem__(self, k): return self.data[k]
-                        def get(self, k, d=None): return self.data.get(k, d)
-
-                    h_cold_final = _SubBoilInfo(h_sub_val, h_cold_sp)
-                    q_flux_0     = q_flux_sb
-
-        T_wh_sp, T_wc_sp, T_wall_sp = estimate_T_wall(
-            T_hot, T_cold, h_hot_sp["h"], h_cold_final["h"], q_flux_0)
-        U_final = 1.0 / (1.0/h_hot_sp["h"] + R_wall + 1.0/h_cold_final["h"])
+        T_wh_sp, T_wc_sp, _ = estimate_T_wall(
+            T_hot, T_cold, h_hot_sp["h"], h_cold_sp["h"], q_flux_0)
         return dict(
-            h_hot=h_hot_sp["h"],  h_cold=h_cold_final["h"],
-            U=U_final, q_flux=q_flux_0, q_cell=q_flux_0*dA, dA=dA,
+            h_hot=h_hot_sp["h"], h_cold=h_cold_sp["h"],
+            U=U_sp, q_flux=q_flux_0, q_cell=q_flux_0*dA, dA=dA,
             Re_hot=h_hot_sp["Re"], Re_cold=h_cold_sp["Re"],
-            V_hot=h_hot_sp["V"],   V_cold=h_cold_sp["V"],
-            f_hot=h_hot_sp["f"],   f_cold=h_cold_sp["f"],
+            V_hot=h_hot_sp["V"],  V_cold=h_cold_sp["V"],
+            f_hot=h_hot_sp["f"],  f_cold=h_cold_sp["f"],
             n_iter=0, q_converged=True,
-            T_wall=T_wall_sp, T_wh=T_wh_sp, T_wc=T_wc_sp,
+            T_wall=0.5*(T_wh_sp+T_wc_sp), T_wh=T_wh_sp, T_wc=T_wc_sp,
             dryout=False, x_di=None,
-            onb=onb_active,
         )
 
     # ── Dryout 체크 (Cold 측 two-phase 일 때만) ──
@@ -350,7 +272,7 @@ def cell_solve_q(hp, cp, hot_state, cold_state,
             f_hot=h_hot_sp["f"],  f_cold=h_cold_sp["f"],
             n_iter=0, q_converged=True,
             T_wall=T_wall_pd, T_wh=T_wh_pd, T_wc=T_wc_pd,
-            dryout=True, x_di=x_di_val, onb=False,
+            dryout=True, x_di=x_di_val,
         )
 
     # ── Step 2: q-iteration (비등, dryout 없음) ──
@@ -430,7 +352,7 @@ def cell_solve_q(hp, cp, hot_state, cold_state,
         f_hot=h_hot_info["f"],  f_cold=h_cold_info["f"],
         n_iter=n_iter, q_converged=converged,
         T_wall=T_wall_avg, T_wh=T_wh_iter, T_wc=T_wc_iter,
-        dryout=False, x_di=x_di_val, onb=False,
+        dryout=False, x_di=x_di_val,
     )
 
 
@@ -552,9 +474,6 @@ def advance_cell(hot_state, cold_state, hot_sat, cold_sat, geom, dx,
 
     H_hot_new  = hot_state["H"]  - q_cell / hot_state["m_dot"]
     H_cold_new = cold_state["H"] - q_cell / cold_state["m_dot"]
-    # Guard: Cold 엔탈피가 포화액보다 낮아지면 클램핑 (shooting 발산 방지)
-    H_cold_min = cold_sat.get("H_l", 0.0) * 0.01   # 최솟값: H_l의 1%
-    H_cold_new = max(H_cold_new, H_cold_min)
 
     dP_hot  = (res["f_hot"]  * (dx/geom["D_h"])
                * hp["rho"]   * res["V_hot"]**2 / 2.0)
@@ -591,7 +510,6 @@ def advance_cell(hot_state, cold_state, hot_sat, cold_sat, geom, dx,
         "T_wc":   res.get("T_wc", None),
         "dryout": res.get("dryout", False),
         "x_di":   res.get("x_di",   None),
-        "onb":    res.get("onb",    False),
     }
     return hot_next, cold_next, info
 
@@ -938,9 +856,8 @@ def solve_counter_current(L, N, geom_extra, boil_corr="chen",
                     xdi_model=xdi_corr,
                     postdryout_model=pd_model,
                 )
-            except Exception as _e:
+            except ValueError:
                 diverged = True
-                if verbose: print(f"  [cell {i}] {type(_e).__name__}: {_e}")
                 break
 
             hot, cold = hot_n, cold_n
@@ -962,7 +879,6 @@ def solve_counter_current(L, N, geom_extra, boil_corr="chen",
                 "T_wc":   info.get("T_wc", None),
                 "dryout": info.get("dryout", False),
                 "x_di":   info.get("x_di",   None),
-                "onb":    info.get("onb",    False),
             })
 
         if diverged:

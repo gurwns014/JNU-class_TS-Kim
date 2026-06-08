@@ -188,31 +188,17 @@ def plot_pressure_drop(result, A_flow_hot=1e-3, A_flow_cold=1e-3,
     # --- two-phase region shading ---
     nd = result["node_data"]
     onset_x = end_x = None
-    onb_start = onb_end = None
-    rg_c = [n.get("regime_cold", "") for n in nd]
+    rg_c = [n.get("regime_cold","") for n in nd]
     for i in range(1, len(rg_c)):
         if onset_x is None and rg_c[i] == "two_phase" \
-           and rg_c[i-1] in ("subcooled", "init", "subcooled_boiling"):
+           and rg_c[i-1] in ("subcooled", "init"):
             onset_x = nd[i]["x_pos"]
         if end_x is None and rg_c[i] == "superheated" \
            and rg_c[i-1] == "two_phase":
             end_x = nd[i]["x_pos"]
-        # ONB 구간
-        if onb_start is None and nd[i].get("onb"):
-            onb_start = nd[i]["x_pos"]
-        if onb_start is not None and onb_end is None \
-           and not nd[i].get("onb") and nd[i-1].get("onb"):
-            onb_end = nd[i-1]["x_pos"]
-
-    # ONB 음영 (보라색)
-    if onb_start is not None:
-        onb_e = (onb_end or onb_start) + result["L"] / result["N"]
-        ax.axvspan(onb_start, onb_e, alpha=0.20, color="purple",
-                   label="ONB (subcooled boiling)")
-
-    # 비등 영역 음영 (주황)
     if onset_x is not None:
         right = end_x if end_x is not None else x_arr[-1]
+        # Cold enters at x=L, so two-phase region is shown as-is (no flip)
         ax.axvspan(onset_x, right, alpha=0.12, color="orange")
 
     # --- final value annotations (pressure) ---
@@ -295,9 +281,6 @@ def plot_pressure_drop(result, A_flow_hot=1e-3, A_flow_cold=1e-3,
 
     # Legend
     from matplotlib.patches import Patch
-    if onb_start is not None:
-        handles.append(Patch(facecolor="purple", alpha=0.3,
-                              label="ONB (subcooled boiling)"))
     if onset_x is not None:
         handles.append(Patch(facecolor="orange", alpha=0.25,
                               label="Cold two-phase region"))
@@ -329,11 +312,8 @@ def save_pressure_csv(result, x_arr, dP_h, dP_c, path="pressure_drop.csv"):
     for i, n in enumerate(nd):
         # dryout 발생 노드는 regime을 "post_dryout"으로 표시
         regime = n.get("regime_cold", "")
-        # ONB 발생 시 regime을 subcooled_boiling으로, dryout 시 post_dryout으로 표시
         if n.get("dryout", False):
             regime = "post_dryout"
-        elif n.get("onb", False):
-            regime = "subcooled_boiling"
 
         x_di_val = n.get("x_di", None)
         x_di_str = round(x_di_val, 6) if x_di_val is not None else ""
@@ -352,7 +332,6 @@ def save_pressure_csv(result, x_arr, dP_h, dP_c, path="pressure_drop.csv"):
             "T_wall_hot_C": t_wh_str,
             "T_wall_cold_C":t_wc_str,
             "regime_cold":  regime,
-            "onb":          "TRUE" if n.get("onb", False) else "",
             "x_di":         x_di_str,
             "x_quality":    round(n.get("x_cold", 0), 6),
             "dP_hot_kPa":   round(dP_h[i] / 1000, 6),
@@ -364,7 +343,7 @@ def save_pressure_csv(result, x_arr, dP_h, dP_c, path="pressure_drop.csv"):
 
     fieldnames = ["x_pos_m", "T_hot_C", "T_cold_C",
                   "T_wall_hot_C", "T_wall_cold_C",
-                  "regime_cold", "onb", "x_di", "x_quality",
+                  "regime_cold", "x_di", "x_quality",
                   "dP_hot_kPa", "dP_cold_kPa",
                   "h_cold_W_m2K", "h_hot_W_m2K", "q_cell_W"]
     with open(path, "w", newline="", encoding="utf-8") as f:
